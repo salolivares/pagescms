@@ -2,8 +2,14 @@
  * Lightweight migration runner for Docker.
  * Reads drizzle-kit's _journal.json and applies pending SQL migrations
  * using the postgres driver — no drizzle-kit dependency needed at runtime.
+ *
+ * Compatible with drizzle-orm's migration tracking:
+ * - Uses "drizzle" schema and "__drizzle_migrations" table
+ * - Stores SHA-256 hash of migration SQL content
+ * - Compares by created_at timestamp ordering
  */
-import { readFileSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import postgres from "postgres";
 
@@ -13,29 +19,34 @@ const JOURNAL_PATH = join(MIGRATIONS_DIR, "meta", "_journal.json");
 const sql = postgres(process.env.DATABASE_URL, { max: 1 });
 
 try {
-  // Ensure the drizzle migrations tracking table exists
+  // Match drizzle-orm's schema and table structure exactly
+  await sql`CREATE SCHEMA IF NOT EXISTS "drizzle"`;
   await sql`
-    CREATE TABLE IF NOT EXISTS "__drizzle_migrations" (
+    CREATE TABLE IF NOT EXISTS "drizzle"."__drizzle_migrations" (
       id SERIAL PRIMARY KEY,
       hash TEXT NOT NULL,
       created_at BIGINT
     )
   `;
 
-  const applied = new Set(
-    (await sql`SELECT hash FROM "__drizzle_migrations"`).map((r) => r.hash)
-  );
+  // Get the latest applied migration timestamp (matches drizzle-orm's approach)
+  const [lastMigration] = await sql`
+    SELECT created_at FROM "drizzle"."__drizzle_migrations"
+    ORDER BY created_at DESC LIMIT 1
+  `;
+  const lastTimestamp = lastMigration ? Number(lastMigration.created_at) : 0;
 
   const journal = JSON.parse(readFileSync(JOURNAL_PATH, "utf-8"));
 
   for (const entry of journal.entries) {
-    if (applied.has(entry.tag)) continue;
+    if (entry.when <= lastTimestamp) continue;
 
     const filePath = join(MIGRATIONS_DIR, `${entry.tag}.sql`);
-    const migration = readFileSync(filePath, "utf-8");
+    const migrationSql = readFileSync(filePath, "utf-8");
+    const hash = createHash("sha256").update(migrationSql).digest("hex");
 
     // Split on breakpoints (drizzle convention: --> statement-breakpoint)
-    const statements = migration
+    const statements = migrationSql
       .split("--> statement-breakpoint")
       .map((s) => s.trim())
       .filter(Boolean);
@@ -45,8 +56,8 @@ try {
         await tx.unsafe(stmt);
       }
       await tx`
-        INSERT INTO "__drizzle_migrations" (hash, created_at)
-        VALUES (${entry.tag}, ${entry.when})
+        INSERT INTO "drizzle"."__drizzle_migrations" (hash, created_at)
+        VALUES (${hash}, ${entry.when})
       `;
     });
 
