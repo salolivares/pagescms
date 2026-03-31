@@ -50,7 +50,6 @@ async function main() {
       checks: "read",
       statuses: "read",
       contents: "write",
-      email_addresses: "read",
       metadata: "read",
     },
     default_events: [
@@ -69,7 +68,6 @@ async function main() {
     hook_attributes: {
       url: webhookUrl,
       active: true,
-      secret: webhookSecret,
     },
   };
 
@@ -88,6 +86,9 @@ async function main() {
   });
 
   const converted = await exchangeManifestCode(code);
+  const appJwt = await generateAppJwt(converted);
+  await setWebhookSecret(appJwt, webhookSecret);
+  await addEmailPermission(appJwt);
   const envPath = args.envPath ? resolve(process.cwd(), args.envPath) : "";
   const authSecret =
     process.env.BETTER_AUTH_SECRET ||
@@ -270,6 +271,68 @@ async function exchangeManifestCode(code) {
   }
 
   return response.json();
+}
+
+async function setWebhookSecret(appJwt, secret) {
+  const response = await fetch("https://api.github.com/app/hook/config", {
+    method: "PATCH",
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${appJwt}`,
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+    body: JSON.stringify({ secret }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `Failed to set webhook secret (${response.status}): ${body}`,
+    );
+  }
+}
+
+async function addEmailPermission(appJwt) {
+  const response = await fetch("https://api.github.com/app", {
+    method: "PATCH",
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${appJwt}`,
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+    body: JSON.stringify({
+      default_events: undefined,
+      permissions: { email_addresses: "read" },
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `Failed to add email_addresses permission (${response.status}): ${body}`,
+    );
+  }
+}
+
+async function generateAppJwt(appCredentials) {
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
+    iat: now - 60,
+    exp: now + 600,
+    iss: String(appCredentials.id),
+  };
+
+  const { createPrivateKey, sign } = await import("node:crypto");
+  const key = createPrivateKey(appCredentials.pem);
+
+  const header = Buffer.from(
+    JSON.stringify({ alg: "RS256", typ: "JWT" }),
+  ).toString("base64url");
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = sign("RSA-SHA256", Buffer.from(`${header}.${body}`), key)
+    .toString("base64url");
+
+  return `${header}.${body}.${signature}`;
 }
 
 function upsertEnv(filePath, values) {
