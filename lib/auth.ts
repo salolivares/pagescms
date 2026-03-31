@@ -54,6 +54,21 @@ export const auth = betterAuth({
     },
   }),
   databaseHooks: {
+    user: {
+      create: {
+        before: async (user) => {
+          const allowed = process.env.ALLOWED_EMAILS;
+          if (!allowed) return;
+          const list = allowed.split(",").map((e) => e.trim().toLowerCase());
+          if (!list.includes(user.email.toLowerCase())) {
+            console.warn("[auth] blocked signup for non-allowed email", {
+              email: user.email,
+            });
+            return false;
+          }
+        },
+      },
+    },
     session: {
       create: {
         after: async (session) => {
