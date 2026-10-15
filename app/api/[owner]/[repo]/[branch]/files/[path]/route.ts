@@ -1,14 +1,15 @@
 import { type NextRequest } from "next/server";
 import { createOctokitInstance } from "@/lib/utils/octokit";
+import { isContentOperationAllowed } from "@/lib/operations";
 import { writeFns } from "@/fields/registry";
 import { configVersion, parseConfig, normalizeConfig } from "@/lib/config";
 import { stringify, parse } from "@/lib/serialization";
 import { deepMap, generateZodSchema, getSchemaByName, sanitizeObject } from "@/lib/schema";
-import { getConfig, updateConfig } from "@/lib/utils/config";
+import { getConfig, updateConfig } from "@/lib/config-store";
 import { getFileExtension, getFileName, normalizePath, serializedTypes, getParentPath } from "@/lib/utils/file";
-import { assertGithubIdentity } from "@/lib/authz";
+import { assertGithubIdentity } from "@/lib/authz-shared";
 import { getToken } from "@/lib/token";
-import { updateFileCache } from "@/lib/github-cache";
+import { updateFileCache } from "@/lib/github-cache-file";
 import { createHttpError, toErrorResponse } from "@/lib/api-error";
 import mergeWith from "lodash.mergewith";
 import { buildCommitTokens, resolveCommitIdentity, resolveCommitMessage } from "@/lib/commit-message";
@@ -57,6 +58,9 @@ export async function POST(
 
         schema = getSchemaByName(config?.object, data.name);
         if (!schema) throw new Error(`Content schema not found for ${data.name}.`);
+        if (!data.sha && !isContentOperationAllowed("create", { schema })) {
+          throw createHttpError(`Creating entries isn't allowed for "${data.name}".`, 403);
+        }
         schemaCommitTemplates = schema?.commit?.templates;
         schemaCommitIdentity = schema?.commit?.identity;
 
@@ -181,6 +185,9 @@ export async function POST(
       case "settings":
         assertGithubIdentity(user, "Only GitHub users can manage settings.");
         if (normalizedPath !== ".pages.yml") throw new Error(`Invalid path "${params.path}" for settings.`);
+        if (!data.sha && !isContentOperationAllowed("create", { scope: "settings" })) {
+          throw createHttpError(`Creating the settings file isn't allowed.`, 403);
+        }
 
         contentBase64 = Buffer.from(data.content.body ?? "").toString("base64");
         break;
@@ -338,8 +345,24 @@ const githubSaveFile = async (
     }
     throw new Error("Invalid response structure");
   } catch (error: any) {
+    const githubMessage = typeof error?.response?.data?.message === "string"
+      ? error.response.data.message
+      : undefined;
+
     if (error.status === 409) {
-      error.message = "File has changed since you last loaded it. Please refresh the page and try again.";
+      if (githubMessage?.includes("Repository rule violations found")) {
+        throw createHttpError(
+          "This repository requires changes through a pull request. Save to a different branch or fork, or ask a maintainer to relax the repository rule for direct edits.",
+          409,
+        );
+      }
+
+      if (sha) {
+        throw createHttpError(
+          "File has changed since you last loaded it. Please refresh the page and try again.",
+          409,
+        );
+      }
     }
 
     // Only handle 422 errors for new files (no sha)
@@ -436,7 +459,9 @@ export async function DELETE(
     const { token } = await getToken(user, params.owner, params.repo, true);
     if (!token) throw new Error("Token not found");
 
-    if (params.path === ".pages.yml") throw new Error(`Deleting the settings file isn't allowed.`);
+    if (!isContentOperationAllowed("delete", { scope: "settings" }) && params.path === ".pages.yml") {
+      throw createHttpError(`Deleting the settings file isn't allowed.`, 403);
+    }
 
     const searchParams = request.nextUrl.searchParams;
     const sha = searchParams.get("sha");
@@ -463,6 +488,9 @@ export async function DELETE(
 
         schema = getSchemaByName(config.object, name);
         if (!schema) throw new Error(`Content schema not found for ${name}.`);
+        if (!isContentOperationAllowed("delete", { schema })) {
+          throw createHttpError(`Deleting entries isn't allowed for "${name}".`, 403);
+        }
         schemaCommitTemplates = schema?.commit?.templates;
         schemaCommitIdentity = schema?.commit?.identity;
         
@@ -539,7 +567,15 @@ export async function DELETE(
       params.branch,
       {
         type: 'delete',
-        path: normalizedPath
+        path: normalizedPath,
+        commit: response?.data.commit?.sha
+          ? {
+              sha: response.data.commit.sha,
+              timestamp: new Date(
+                response.data.commit.committer?.date ?? new Date().toISOString(),
+              ).getTime(),
+            }
+          : undefined,
       }
     );
 

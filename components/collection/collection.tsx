@@ -22,7 +22,7 @@ import {
   sortFiles,
 } from "@/lib/utils/file";
 import { viewComponents } from "@/fields/registry";
-import { getSchemaActions } from "@/lib/repo-actions";
+import { getSchemaActions } from "@/lib/actions";
 import {
   getSchemaByName,
   getPrimaryField,
@@ -34,6 +34,7 @@ import { EmptyCreate } from "@/components/empty-create";
 import { FileOptions } from "@/components/file/file-options";
 import { CollectionTable } from "./collection-table";
 import { FolderCreate } from "@/components/folder-create";
+import { resolveContentOperations } from "@/lib/operations";
 import { useRepoHeader } from "@/components/repo/repo-header-context";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
@@ -92,6 +93,7 @@ const CollectionHeaderActions = memo(function CollectionHeaderActions({
   actionNode,
   collectionPath,
   name,
+  showAddEntry,
   showFolderCreate,
   onFolderCreate,
   onSearchChange,
@@ -100,6 +102,7 @@ const CollectionHeaderActions = memo(function CollectionHeaderActions({
   actionNode?: ReactNode;
   collectionPath: string;
   name: string;
+  showAddEntry: boolean;
   showFolderCreate: boolean;
   onFolderCreate: (entry: any) => void;
   onSearchChange: (value: string) => void;
@@ -137,6 +140,7 @@ const CollectionHeaderActions = memo(function CollectionHeaderActions({
                   type="button"
                   variant="outline"
                   className="shrink-0"
+                  size="icon"
                 >
                   <FolderPlus />
                 </Button>
@@ -146,21 +150,22 @@ const CollectionHeaderActions = memo(function CollectionHeaderActions({
           <TooltipContent>Create folder</TooltipContent>
         </Tooltip>
       )}
-      <Link
-        className={cn(buttonVariants(), "hidden sm:flex")}
-        href={addEntryHref}
-      >
-        Add an entry
-      </Link>
-      <Link
-        className={cn(
-          buttonVariants({ size: "icon" }),
-          "sm:hidden shrink-0",
-        )}
-        href={addEntryHref}
-      >
-        <Plus className="size-4" />
-      </Link>
+      {showAddEntry && (
+        <>
+          <Link
+            className={cn(buttonVariants(), "hidden sm:flex")}
+            href={addEntryHref}
+          >
+            Add an entry
+          </Link>
+          <Link
+            className={cn(buttonVariants({ size: "icon" }), "sm:hidden shrink-0")}
+            href={addEntryHref}
+          >
+            <Plus className="size-4" />
+          </Link>
+        </>
+      )}
     </div>
   );
 });
@@ -185,6 +190,10 @@ export function Collection({ name, path }: { name: string; path?: string }) {
   if (!schema) throw new Error(`Schema not found for "${name}".`);
   if (schema.type !== "collection")
     throw new Error(`"${name}" is not a collection.`);
+  const operations = useMemo(() => resolveContentOperations({ schema }), [schema]);
+  const canCreate = operations.create;
+  const canRename = operations.rename;
+  const canDelete = operations.delete;
 
   const viewFields = useMemo(() => {
     let pathAndFieldArray: any[] = [];
@@ -548,6 +557,8 @@ export function Collection({ name, path }: { name: string; path?: string }) {
                 sha={row.original.sha}
                 type="collection"
                 name={name}
+                canDelete={canDelete}
+                canRename={canRename}
                 onDelete={handleDelete}
                 onRename={handleRename}
               >
@@ -557,13 +568,15 @@ export function Collection({ name, path }: { name: string; path?: string }) {
               </FileOptions>
             </ButtonGroup>
           )}
-          {schema.view?.layout === "tree" &&
+          {canCreate &&
+            schema.view?.layout === "tree" &&
             (row.original.type === "file" &&
             !row.original.isNode &&
             !(
               row.depth === 0 &&
               row.original.name === schema.view?.node?.filename
             ) ? (
+              canRename ? (
               <AlertDialog>
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -610,6 +623,7 @@ export function Collection({ name, path }: { name: string; path?: string }) {
                   </AlertDialogFooter>
                 </AlertDialogContent>
               </AlertDialog>
+              ) : null
             ) : (
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -652,6 +666,9 @@ export function Collection({ name, path }: { name: string; path?: string }) {
     schema.view?.node?.filename,
     schema.extension,
     handleConfirmRenameNode,
+    canCreate,
+    canDelete,
+    canRename,
   ]);
 
   const initialState = useMemo(() => {
@@ -929,7 +946,8 @@ export function Collection({ name, path }: { name: string; path?: string }) {
           }
           collectionPath={collectionPath}
           name={name}
-          showFolderCreate={schema.subfolders !== false}
+          showAddEntry={canCreate}
+          showFolderCreate={schema.subfolders !== false && canCreate}
           onFolderCreate={handleFolderCreate}
           onSearchChange={handleTableSearchChange}
         />
@@ -945,6 +963,7 @@ export function Collection({ name, path }: { name: string; path?: string }) {
       config.repo,
       handleFolderCreate,
       handleTableSearchChange,
+      canCreate,
       name,
       schema.format,
       schema.label,
@@ -980,9 +999,11 @@ export function Collection({ name, path }: { name: string; path?: string }) {
         </EmptyHeader>
         <EmptyContent>
           {error === "Not found" ? (
-            <EmptyCreate type="content" name={schema.name}>
-              Create folder
-            </EmptyCreate>
+            canCreate ? (
+              <EmptyCreate type="content" name={schema.name}>
+                Create folder
+              </EmptyCreate>
+            ) : null
           ) : (
             <Link
               className={buttonVariants({ variant: "default" })}
