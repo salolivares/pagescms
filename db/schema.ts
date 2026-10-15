@@ -10,6 +10,7 @@ import {
   uniqueIndex,
   jsonb,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 const userTable = pgTable("user", {
   id: text("id").notNull().primaryKey(),
@@ -89,7 +90,31 @@ const collaboratorTable = pgTable("collaborator", {
   invitedBy: text("invited_by").references(() => userTable.id)
 }, table => ({
   idx_collaborator_owner_repo_email: index("idx_collaborator_owner_repo_email").on(table.owner, table.repo, table.email),
-  idx_collaborator_userId: index("idx_collaborator_userId").on(table.userId)
+  idx_collaborator_userId: index("idx_collaborator_userId").on(table.userId),
+  uq_collaborator_owner_repo_email_ci: uniqueIndex("uq_collaborator_owner_repo_email_ci").on(
+    sql`lower(${table.owner})`,
+    sql`lower(${table.repo})`,
+    sql`lower(${table.email})`,
+  ),
+}));
+
+const collaboratorInviteTable = pgTable("collaborator_invite", {
+  id: serial("id").primaryKey(),
+  token: text("token").notNull(),
+  email: text("email").notNull(),
+  owner: text("owner").notNull(),
+  repo: text("repo").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow()
+}, table => ({
+  uq_collaborator_invite_token: uniqueIndex("uq_collaborator_invite_token").on(table.token),
+  idx_collaborator_invite_owner_repo_email: index("idx_collaborator_invite_owner_repo_email").on(table.owner, table.repo, table.email),
+  uq_collaborator_invite_owner_repo_email_ci: uniqueIndex("uq_collaborator_invite_owner_repo_email_ci").on(
+    sql`lower(${table.owner})`,
+    sql`lower(${table.repo})`,
+    sql`lower(${table.email})`,
+  ),
 }));
 
 const configTable = pgTable("config", {
@@ -136,8 +161,6 @@ const cacheFileMetaTable = pgTable("cache_file_meta", {
   context: text("context").notNull().default("branch"),
   commitSha: text("commit_sha"),
   commitTimestamp: timestamp("commit_timestamp"),
-  targetCommitSha: text("target_commit_sha"),
-  targetCommitTimestamp: timestamp("target_commit_timestamp"),
   status: text("status").notNull().default("ok"),
   error: text("error"),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
@@ -193,6 +216,7 @@ export {
   verificationTable,
   githubInstallationTokenTable,
   collaboratorTable,
+  collaboratorInviteTable,
   configTable,
   cacheFileTable,
   cacheFileMetaTable,
