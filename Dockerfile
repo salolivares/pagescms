@@ -1,4 +1,5 @@
-FROM node:20-alpine AS base
+ARG NODE_VERSION=24.22.1
+FROM node:${NODE_VERSION}-alpine AS base
 
 # --- Dependencies ---
 FROM base AS deps
